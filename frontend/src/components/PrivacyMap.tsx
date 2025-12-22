@@ -109,7 +109,10 @@ function MapContent({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const onEachFeature = (feature: any, layer: Layer) => {
     if (feature.properties) {
-      const count = feature.properties.count?.toFixed?.(1) ?? feature.properties.count ?? "0";
+      const count =
+        feature.properties.count?.toFixed?.(1) ??
+        feature.properties.count ??
+        "0";
       const depth = feature.properties.depth || 0;
 
       layer.bindTooltip(
