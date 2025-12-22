@@ -1,7 +1,7 @@
 # PrivMap Makefile
 # Convenience commands for development and deployment
 
-.PHONY: help dev prod build up down logs clean test
+.PHONY: help dev prod build up down logs clean test ingest ingest-sample ingest-docker
 
 # Default target
 help:
@@ -16,6 +16,8 @@ help:
 	@echo "  make logs        View logs from all services"
 	@echo "  make clean       Remove all containers, volumes, and images"
 	@echo "  make test        Run backend tests"
+	@echo "  make ingest      Import all taxi data to database"
+	@echo "  make ingest-sample  Import 100k sample records"
 	@echo "  make db          Start only the database"
 	@echo "  make backend     Start only the backend (requires db)"
 	@echo "  make frontend    Start only the frontend (requires backend)"
@@ -94,4 +96,22 @@ db-shell:
 # Backend shell
 backend-shell:
 	docker exec -it privmap-backend-dev /bin/bash
+
+# Data ingestion
+ingest:
+	@echo "Ingesting taxi data into database..."
+	cd backend && python scripts/ingest_data.py --csv ../train.csv
+	@echo "Done!"
+
+ingest-sample:
+	@echo "Ingesting sample data (100k records)..."
+	cd backend && python scripts/ingest_data.py --csv ../train.csv --limit 100000
+	@echo "Done!"
+
+ingest-docker:
+	@echo "Ingesting data via Docker..."
+	docker exec privmap-backend-dev python scripts/ingest_data.py \
+		--csv /app/data/train.csv \
+		--database-url postgresql+asyncpg://privmap:privmap_secret@db:5432/privmap
+	@echo "Done!"
 
