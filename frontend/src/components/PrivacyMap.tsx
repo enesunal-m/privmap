@@ -1,10 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
-import type { Layer, PathOptions, GeoJSON as LeafletGeoJSON } from "leaflet";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
 import { getHeatmapColor } from "@/lib/utils";
 import "leaflet/dist/leaflet.css";
+
+// Dynamically import react-leaflet components to avoid SSR issues
+const MapContainerDynamic = dynamic(
+  () => import("react-leaflet").then((mod) => mod.MapContainer),
+  { ssr: false }
+);
+
+const TileLayerDynamic = dynamic(
+  () => import("react-leaflet").then((mod) => mod.TileLayer),
+  { ssr: false }
+);
+
+const GeoJSONDynamic = dynamic(
+  () => import("react-leaflet").then((mod) => mod.GeoJSON),
+  { ssr: false }
+);
 
 interface MapBounds {
   min_lon: number;
@@ -21,23 +36,9 @@ interface PrivacyMapProps {
   onBoundsChange?: (bounds: MapBounds) => void;
 }
 
-// Component to fit bounds when they change
-function FitBounds({ bounds }: { bounds: MapBounds }) {
-  const map = useMap();
-
-  useEffect(() => {
-    map.fitBounds([
-      [bounds.min_lat, bounds.min_lon],
-      [bounds.max_lat, bounds.max_lon],
-    ]);
-  }, [map, bounds]);
-
-  return null;
-}
-
 // Style function for GeoJSON features
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getFeatureStyle(feature: any): PathOptions {
+function getFeatureStyle(feature: any): Record<string, unknown> {
   if (!feature?.properties) {
     return {
       fillColor: "#3f3f46",
@@ -63,6 +64,8 @@ function getFeatureStyle(feature: any): PathOptions {
 // Process GeoJSON to add maxCount for normalization
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function processGeoJSON(geojson: any): any {
+  if (!geojson?.features) return geojson;
+
   const counts: number[] = geojson.features
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .map((f: any) => f.properties?.count || 0)
@@ -70,7 +73,6 @@ function processGeoJSON(geojson: any): any {
 
   if (counts.length === 0) return geojson;
 
-  // Use 95th percentile for better color distribution
   counts.sort((a, b) => a - b);
   const maxCount =
     counts[Math.floor(counts.length * 0.95)] || Math.max(...counts);
@@ -88,16 +90,27 @@ function processGeoJSON(geojson: any): any {
   };
 }
 
-// Inner map component that handles GeoJSON updates
-function MapContent({
+export function PrivacyMap({
   geojson,
   bounds,
-}: {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  geojson: any;
-  bounds: MapBounds;
-}) {
-  const geoJsonRef = useRef<LeafletGeoJSON | null>(null);
+  isLoading = false,
+}: PrivacyMapProps) {
+  const [isClient, setIsClient] = useState(false);
+  const mapRef = useRef<L.Map | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Only render on client side
+  useEffect(() => {
+    setIsClient(true);
+
+    return () => {
+      // Cleanup map instance on unmount
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
 
   // Process GeoJSON for visualization
   const processedGeoJSON = useMemo(() => {
@@ -105,9 +118,15 @@ function MapContent({
     return processGeoJSON(geojson);
   }, [geojson]);
 
-  // Tooltip for each feature
+  // Generate unique key for GeoJSON layer
+  const geoJsonKey = useMemo(() => {
+    if (!processedGeoJSON) return "empty";
+    return `geojson-${processedGeoJSON.features?.length || 0}-${Date.now()}`;
+  }, [processedGeoJSON]);
+
+  // Tooltip and hover handler
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onEachFeature = (feature: any, layer: Layer) => {
+  const onEachFeature = useCallback((feature: any, layer: any) => {
     if (feature.properties) {
       const count =
         feature.properties.count?.toFixed?.(1) ??
@@ -116,80 +135,30 @@ function MapContent({
       const depth = feature.properties.depth || 0;
 
       layer.bindTooltip(
-        `<div class="font-mono text-xs">
+        `<div style="font-family: monospace; font-size: 12px;">
           <div><strong>Count:</strong> ${count}</div>
           <div><strong>Depth:</strong> ${depth}</div>
         </div>`,
-        {
-          sticky: true,
-          className:
-            "!bg-surface-800 !text-surface-100 !border-surface-600 !rounded-lg !px-2 !py-1",
-        }
+        { sticky: true }
       );
 
-      // Hover effect
       layer.on({
-        mouseover: (e) => {
-          const target = e.target;
-          target.setStyle({
+        mouseover: (e: L.LeafletMouseEvent) => {
+          e.target.setStyle({
             weight: 2,
             color: "#22c55e",
             fillOpacity: 0.9,
           });
         },
-        mouseout: (e) => {
-          geoJsonRef.current?.resetStyle(e.target);
+        mouseout: (e: L.LeafletMouseEvent) => {
+          e.target.setStyle(getFeatureStyle(feature));
         },
       });
     }
-  };
-
-  // Generate a stable key for GeoJSON based on feature count
-  const geoJsonKey = useMemo(() => {
-    if (!processedGeoJSON) return "empty";
-    return `geojson-${processedGeoJSON.features.length}-${Date.now()}`;
-  }, [processedGeoJSON]);
-
-  return (
-    <>
-      <TileLayer
-        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      />
-
-      <FitBounds bounds={bounds} />
-
-      {processedGeoJSON && (
-        <GeoJSON
-          ref={geoJsonRef}
-          key={geoJsonKey}
-          data={processedGeoJSON}
-          style={getFeatureStyle}
-          onEachFeature={onEachFeature}
-        />
-      )}
-    </>
-  );
-}
-
-export function PrivacyMap({
-  geojson,
-  bounds,
-  isLoading = false,
-}: PrivacyMapProps) {
-  // Use state to track if map is mounted (prevents SSR issues)
-  const [isMounted, setIsMounted] = useState(false);
-
-  useEffect(() => {
-    setIsMounted(true);
   }, []);
 
-  // Generate a stable key for the map container based on bounds
-  const mapKey = useMemo(() => {
-    return `map-${bounds.min_lon}-${bounds.max_lon}-${bounds.min_lat}-${bounds.max_lat}`;
-  }, [bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat]);
-
-  if (!isMounted) {
+  // Don't render map on server
+  if (!isClient) {
     return (
       <div className="relative w-full h-full rounded-xl overflow-hidden border border-surface-700 bg-surface-800 flex items-center justify-center">
         <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
@@ -198,16 +167,40 @@ export function PrivacyMap({
   }
 
   return (
-    <div className="relative w-full h-full rounded-xl overflow-hidden border border-surface-700">
-      <MapContainer
-        key={mapKey}
+    <div
+      ref={containerRef}
+      className="relative w-full h-full rounded-xl overflow-hidden border border-surface-700"
+    >
+      <MapContainerDynamic
         center={[bounds.center.lat, bounds.center.lon]}
         zoom={13}
         className="w-full h-full"
         zoomControl={true}
+        ref={mapRef}
+        whenReady={() => {
+          // Fit bounds when map is ready
+          if (mapRef.current) {
+            mapRef.current.fitBounds([
+              [bounds.min_lat, bounds.min_lon],
+              [bounds.max_lat, bounds.max_lon],
+            ]);
+          }
+        }}
       >
-        <MapContent geojson={geojson} bounds={bounds} />
-      </MapContainer>
+        <TileLayerDynamic
+          attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        />
+
+        {processedGeoJSON && (
+          <GeoJSONDynamic
+            key={geoJsonKey}
+            data={processedGeoJSON}
+            style={getFeatureStyle}
+            onEachFeature={onEachFeature}
+          />
+        )}
+      </MapContainerDynamic>
 
       {/* Loading overlay */}
       {isLoading && (
