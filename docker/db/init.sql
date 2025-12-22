@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS taxi_pickups (
 CREATE INDEX IF NOT EXISTS idx_taxi_pickups_location 
 ON taxi_pickups USING GIST(location);
 
+-- Create B-tree index on longitude/latitude for fast range queries
+CREATE INDEX IF NOT EXISTS idx_taxi_pickups_lon_lat 
+ON taxi_pickups(longitude, latitude);
+
 CREATE INDEX IF NOT EXISTS idx_taxi_pickups_trip_id 
 ON taxi_pickups(trip_id);
 

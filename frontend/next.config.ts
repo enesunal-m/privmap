@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-    reactStrictMode: true,
+    // Disabled due to incompatibility with Leaflet map initialization
+    // Leaflet stores state on DOM elements which conflicts with Strict Mode's double-mounting
+    reactStrictMode: false,
 
     // Enable standalone output for Docker builds
     output: "standalone",

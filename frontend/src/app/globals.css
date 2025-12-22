@@ -127,6 +127,18 @@ body {
   background: linear-gradient(90deg, #22c55e 0%, #eab308 50%, #ef4444 100%);
 }
 
+/* Heatmap density gradient - matches getHeatmapColor function */
+.density-gradient {
+  background: linear-gradient(90deg, 
+    rgba(39, 39, 42, 0.3) 0%, 
+    #324F7D 15%, 
+    #06B6D4 35%, 
+    #22C55E 55%, 
+    #FACC15 75%, 
+    #EC4899 100%
+  );
+}
+
 /* Utility classes */
 @layer utilities {
   .text-balance {

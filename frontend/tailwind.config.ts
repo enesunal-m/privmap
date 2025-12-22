@@ -51,8 +51,8 @@ const config: Config = {
                 },
             },
             fontFamily: {
-                sans: ["var(--font-geist-sans)", "system-ui", "sans-serif"],
-                mono: ["var(--font-geist-mono)", "monospace"],
+                sans: ["var(--font-outfit)", "system-ui", "sans-serif"],
+                mono: ["var(--font-geist-mono)", "JetBrains Mono", "monospace"],
                 display: ["var(--font-outfit)", "system-ui", "sans-serif"],
             },
             animation: {

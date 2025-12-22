@@ -5,7 +5,6 @@ Spatial query endpoints with differential privacy.
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-from pathlib import Path
 
 from ..database import get_db
 from ..services.session_service import SessionService
@@ -26,18 +25,9 @@ settings = get_settings()
 router = APIRouter()
 
 
-def get_spatial_service() -> SpatialService:
-    """Dependency for spatial service."""
-    # Check both config path and fallback local path
-    data_path = Path(settings.data_path)
-    if not data_path.exists():
-        # Fallback to local path for development
-        local_path = Path(__file__).parent.parent.parent.parent.parent / "train.csv"
-        if local_path.exists():
-            data_path = local_path
-        else:
-            data_path = None
-    return SpatialService(str(data_path) if data_path else None)
+async def get_spatial_service(db: AsyncSession = Depends(get_db)) -> SpatialService:
+    """Dependency for spatial service with database connection."""
+    return SpatialService(db)
 
 
 async def get_session_service(db: AsyncSession = Depends(get_db)) -> SessionService:
@@ -115,7 +105,7 @@ async def create_decomposition(
     
     # Create decomposition
     bounds = bounds_params_to_box(request.bounds)
-    result = spatial.create_decomposition(
+    result = await spatial.create_decomposition(
         epsilon=request.epsilon,
         bounds=bounds,
     )
@@ -150,7 +140,7 @@ async def quick_decomposition(
         max_lat=max_lat,
     )
     
-    result = spatial.create_decomposition(epsilon=epsilon, bounds=bounds)
+    result = await spatial.create_decomposition(epsilon=epsilon, bounds=bounds)
     
     return {
         "geojson": result["geojson"],
@@ -193,7 +183,7 @@ async def create_heatmap(
         remaining_budget = session.remaining_budget
     
     bounds = bounds_params_to_box(request.bounds)
-    result = spatial.create_heatmap(
+    result = await spatial.create_heatmap(
         epsilon=request.epsilon,
         bounds=bounds,
         resolution=request.resolution,
@@ -218,7 +208,7 @@ async def get_data_statistics(
     does not consume privacy budget as it returns aggregate
     statistics that don't reveal individual records.
     """
-    return spatial.get_data_statistics()
+    return await spatial.get_data_statistics()
 
 
 @router.get("/bounds")
@@ -234,4 +224,3 @@ async def get_default_bounds():
             "lat": (settings.map_min_lat + settings.map_max_lat) / 2,
         }
     }
-

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import dynamic from "next/dynamic";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Header } from "@/components/Header";
 import { EpsilonSelector } from "@/components/EpsilonSelector";
@@ -12,19 +11,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { usePrivacySession } from "@/hooks/usePrivacySession";
 import { api, DecompositionResponse, BoundsResponse } from "@/lib/api";
 import { Play, RotateCcw, Info, Zap } from "lucide-react";
-
-// Dynamic import for map (requires client-side only)
-const PrivacyMap = dynamic(
-  () => import("@/components/PrivacyMap").then((mod) => mod.PrivacyMap),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="w-full h-full bg-surface-800 rounded-xl flex items-center justify-center">
-        <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    ),
-  }
-);
+import { PrivacyMap } from "@/components/PrivacyMap";
 
 // Default bounds for Porto, Portugal
 const DEFAULT_BOUNDS: BoundsResponse = {
@@ -58,20 +45,22 @@ export default function HomePage() {
     staleTime: Infinity,
   });
 
-  // Decomposition mutation
+  // Decomposition mutation - uses session-tracked endpoint for budget management
   const decompositionMutation = useMutation({
     mutationFn: async (eps: number) => {
-      // Use quick decomposition (no session tracking) for demo
-      return api.getQuickDecomposition(eps, bounds);
+      return api.getDecomposition({
+        epsilon: eps,
+        bounds: {
+          min_lon: bounds.min_lon,
+          max_lon: bounds.max_lon,
+          min_lat: bounds.min_lat,
+          max_lat: bounds.max_lat,
+        },
+      });
     },
     onSuccess: (data) => {
-      setDecomposition({
-        geojson: data.geojson,
-        statistics: data.statistics as DecompositionResponse["statistics"],
-        epsilon_spent: data.epsilon_used,
-        remaining_budget: remainingBudget - data.epsilon_used,
-      });
-      refreshStatus();
+      setDecomposition(data);
+      refreshStatus(); // Refresh session to get updated budget
     },
   });
 
@@ -191,10 +180,11 @@ export default function HomePage() {
                     setEpsilon(eps);
                     setTimeout(() => decompositionMutation.mutate(eps), 100);
                   }}
-                  disabled={decompositionMutation.isPending}
+                  disabled={decompositionMutation.isPending || remainingBudget < eps}
                   className="flex-1 py-2 px-2 rounded-lg bg-surface-800 hover:bg-surface-700 
                            text-xs font-mono text-surface-300 transition-colors
-                           disabled:opacity-50 flex items-center justify-center gap-1"
+                           disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+                  title={remainingBudget < eps ? `Need ε=${eps}, have ${remainingBudget.toFixed(2)}` : `Run with ε=${eps}`}
                 >
                   <Zap className="w-3 h-3" />
                   ε={eps}

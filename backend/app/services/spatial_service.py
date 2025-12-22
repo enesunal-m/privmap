@@ -4,10 +4,10 @@ Spatial query service using PrivTree for differential privacy.
 
 import numpy as np
 from typing import Optional, Tuple
-from pathlib import Path
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..privacy.privtree import PrivTree, BoundingBox
-from ..data_ingestion import load_points_as_array
 from ..config import get_settings
 
 settings = get_settings()
@@ -22,14 +22,14 @@ class SpatialService:
     while protecting sparse regions.
     """
     
-    def __init__(self, data_path: Optional[str] = None):
+    def __init__(self, db: AsyncSession):
         """
         Initialize the spatial service.
         
         Args:
-            data_path: Path to the taxi CSV data file
+            db: Async database session
         """
-        self.data_path = data_path
+        self.db = db
         self._cached_points: Optional[np.ndarray] = None
         self._data_bounds: Optional[Tuple[float, float, float, float]] = None
     
@@ -42,46 +42,102 @@ class SpatialService:
             max_lat=settings.map_max_lat,
         )
     
-    def load_data(
+    async def load_data(
         self,
         limit: Optional[int] = None,
-        bounds: Optional[BoundingBox] = None
+        bounds: Optional[BoundingBox] = None,
+        sample_size: int = 1_700_000  # Default sample size for performance
     ) -> np.ndarray:
         """
-        Load taxi pickup data points.
+        Load taxi pickup data points from PostgreSQL with sampling.
         
-        Uses caching to avoid reloading from disk on every query.
+        Uses random sampling for large datasets to maintain performance
+        while preserving statistical properties for privacy algorithms.
         """
-        if self._cached_points is not None and limit is None:
-            points = self._cached_points
+        if bounds is None:
+            bounds = self._get_default_bounds()
+        
+        # First, get count to determine if sampling needed
+        count_result = await self.db.execute(
+            text("""
+                SELECT COUNT(*) FROM taxi_pickups 
+                WHERE longitude >= :min_lon 
+                  AND longitude < :max_lon 
+                  AND latitude >= :min_lat 
+                  AND latitude < :max_lat
+            """),
+            {
+                "min_lon": bounds.min_lon,
+                "max_lon": bounds.max_lon,
+                "min_lat": bounds.min_lat,
+                "max_lat": bounds.max_lat,
+            }
+        )
+        total_count = count_result.scalar() or 0
+        
+        if total_count == 0:
+            # Return demo data if no data in database
+            return self._generate_demo_data(bounds)
+        
+        # Determine effective limit
+        effective_limit = limit or sample_size
+        
+        # Use TABLESAMPLE for large datasets, or direct query for smaller ones
+        if total_count > effective_limit * 2:
+            # Calculate sample percentage to get approximately the desired sample size
+            sample_pct = min(100, (effective_limit / total_count) * 100 * 1.2)  # 20% buffer
+            
+            query = text("""
+                SELECT longitude, latitude 
+                FROM taxi_pickups TABLESAMPLE BERNOULLI(:sample_pct)
+                WHERE longitude >= :min_lon 
+                  AND longitude < :max_lon 
+                  AND latitude >= :min_lat 
+                  AND latitude < :max_lat
+                LIMIT :limit
+            """)
+            
+            result = await self.db.execute(
+                query,
+                {
+                    "sample_pct": sample_pct,
+                    "min_lon": bounds.min_lon,
+                    "max_lon": bounds.max_lon,
+                    "min_lat": bounds.min_lat,
+                    "max_lat": bounds.max_lat,
+                    "limit": effective_limit,
+                }
+            )
         else:
-            if not self.data_path or not Path(self.data_path).exists():
-                # Return synthetic demo data if no real data available
-                return self._generate_demo_data(bounds or self._get_default_bounds())
+            # Small enough dataset - just fetch with limit
+            query = text("""
+                SELECT longitude, latitude 
+                FROM taxi_pickups 
+                WHERE longitude >= :min_lon 
+                  AND longitude < :max_lon 
+                  AND latitude >= :min_lat 
+                  AND latitude < :max_lat
+                LIMIT :limit
+            """)
             
-            bounds_tuple = None
-            if bounds:
-                bounds_tuple = (bounds.min_lon, bounds.max_lon, bounds.min_lat, bounds.max_lat)
-            
-            points = load_points_as_array(
-                self.data_path,
-                limit=limit,
-                bounds=bounds_tuple
+            result = await self.db.execute(
+                query,
+                {
+                    "min_lon": bounds.min_lon,
+                    "max_lon": bounds.max_lon,
+                    "min_lat": bounds.min_lat,
+                    "max_lat": bounds.max_lat,
+                    "limit": effective_limit,
+                }
             )
-            
-            if limit is None:
-                self._cached_points = points
         
-        # Filter to bounds if specified
-        if bounds and len(points) > 0:
-            mask = (
-                (points[:, 0] >= bounds.min_lon) &
-                (points[:, 0] < bounds.max_lon) &
-                (points[:, 1] >= bounds.min_lat) &
-                (points[:, 1] < bounds.max_lat)
-            )
-            points = points[mask]
+        rows = result.fetchall()
         
+        if not rows:
+            return self._generate_demo_data(bounds)
+        
+        # Convert to numpy array
+        points = np.array([[row[0], row[1]] for row in rows], dtype=np.float64)
         return points
     
     def _generate_demo_data(self, bounds: BoundingBox, n_points: int = 50000) -> np.ndarray:
@@ -149,7 +205,7 @@ class SpatialService:
         
         return all_points
     
-    def create_decomposition(
+    async def create_decomposition(
         self,
         epsilon: float,
         bounds: Optional[BoundingBox] = None,
@@ -169,8 +225,8 @@ class SpatialService:
         if bounds is None:
             bounds = self._get_default_bounds()
         
-        # Load data points
-        points = self.load_data(limit=max_points, bounds=bounds)
+        # Load data points from PostgreSQL
+        points = await self.load_data(limit=max_points, bounds=bounds)
         
         # Create and build PrivTree
         privtree = PrivTree(
@@ -192,7 +248,7 @@ class SpatialService:
             "point_count": len(points),
         }
     
-    def create_heatmap(
+    async def create_heatmap(
         self,
         epsilon: float,
         bounds: Optional[BoundingBox] = None,
@@ -217,7 +273,7 @@ class SpatialService:
         if bounds is None:
             bounds = self._get_default_bounds()
         
-        points = self.load_data(bounds=bounds)
+        points = await self.load_data(bounds=bounds)
         
         # Create grid
         lon_edges = np.linspace(bounds.min_lon, bounds.max_lon, resolution + 1)
@@ -262,20 +318,43 @@ class SpatialService:
             "resolution": resolution,
         }
     
-    def get_data_statistics(self) -> dict:
+    async def get_data_statistics(self) -> dict:
         """Get statistics about the loaded data."""
-        points = self.load_data()
+        # Query count and bounds from database
+        result = await self.db.execute(text("""
+            SELECT 
+                COUNT(*) as total,
+                MIN(longitude) as min_lon,
+                MAX(longitude) as max_lon,
+                MIN(latitude) as min_lat,
+                MAX(latitude) as max_lat,
+                AVG(longitude) as avg_lon,
+                AVG(latitude) as avg_lat
+            FROM taxi_pickups
+        """))
         
-        if len(points) == 0:
-            return {"error": "No data loaded"}
+        row = result.fetchone()
+        
+        if not row or row[0] == 0:
+            # Return demo data stats
+            return {
+                "total_points": 50000,
+                "min_longitude": settings.map_min_lon,
+                "max_longitude": settings.map_max_lon,
+                "min_latitude": settings.map_min_lat,
+                "max_latitude": settings.map_max_lat,
+                "center_longitude": (settings.map_min_lon + settings.map_max_lon) / 2,
+                "center_latitude": (settings.map_min_lat + settings.map_max_lat) / 2,
+                "source": "demo",
+            }
         
         return {
-            "total_points": len(points),
-            "min_longitude": float(np.min(points[:, 0])),
-            "max_longitude": float(np.max(points[:, 0])),
-            "min_latitude": float(np.min(points[:, 1])),
-            "max_latitude": float(np.max(points[:, 1])),
-            "center_longitude": float(np.mean(points[:, 0])),
-            "center_latitude": float(np.mean(points[:, 1])),
+            "total_points": row[0],
+            "min_longitude": float(row[1]),
+            "max_longitude": float(row[2]),
+            "min_latitude": float(row[3]),
+            "max_latitude": float(row[4]),
+            "center_longitude": float(row[5]),
+            "center_latitude": float(row[6]),
+            "source": "database",
         }
-
