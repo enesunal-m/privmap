@@ -25,13 +25,19 @@ from ..config import get_settings
 settings = get_settings()
 router = APIRouter()
 
-# Path to the taxi data file
-DATA_PATH = Path(__file__).parent.parent.parent.parent.parent / "train.csv"
-
 
 def get_spatial_service() -> SpatialService:
     """Dependency for spatial service."""
-    return SpatialService(str(DATA_PATH) if DATA_PATH.exists() else None)
+    # Check both config path and fallback local path
+    data_path = Path(settings.data_path)
+    if not data_path.exists():
+        # Fallback to local path for development
+        local_path = Path(__file__).parent.parent.parent.parent.parent / "train.csv"
+        if local_path.exists():
+            data_path = local_path
+        else:
+            data_path = None
+    return SpatialService(str(data_path) if data_path else None)
 
 
 async def get_session_service(db: AsyncSession = Depends(get_db)) -> SessionService:

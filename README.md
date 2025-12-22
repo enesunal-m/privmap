@@ -126,6 +126,49 @@ CREATE EXTENSION postgis;
 
 Update `DATABASE_URL` in `.env` and run the data ingestion script.
 
+### Docker Setup (Recommended)
+
+The easiest way to run PrivMap is using Docker Compose:
+
+```bash
+# Quick start - production mode
+make prod
+
+# Or manually:
+docker compose up -d
+```
+
+This starts all services:
+
+- **Frontend**: http://localhost:3000
+- **Backend**: http://localhost:8000
+- **Database**: localhost:5432
+
+#### Development with Docker
+
+For development with hot-reload on the backend:
+
+```bash
+# Start database and backend with hot-reload
+make dev
+
+# Run frontend separately (for hot-reload)
+cd frontend && npm run dev
+```
+
+#### Available Make Commands
+
+| Command         | Description                            |
+| --------------- | -------------------------------------- |
+| `make dev`      | Start development environment          |
+| `make prod`     | Start production environment           |
+| `make build`    | Build all Docker images                |
+| `make down`     | Stop all services                      |
+| `make logs`     | View logs from all services            |
+| `make clean`    | Remove containers, volumes, and images |
+| `make test`     | Run backend tests                      |
+| `make db-shell` | Open PostgreSQL shell                  |
+
 ## Usage
 
 ### Privacy Budget (ε)

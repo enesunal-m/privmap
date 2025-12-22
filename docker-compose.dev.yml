@@ -1,0 +1,55 @@
+version: "3.9"
+
+# Development configuration with hot-reload and volume mounts
+
+services:
+  # PostgreSQL with PostGIS extension
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: privmap-db-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: privmap
+      POSTGRES_PASSWORD: privmap_secret
+      POSTGRES_DB: privmap
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./docker/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U privmap -d privmap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend with hot-reload
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: privmap-backend-dev
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://privmap:privmap_secret@db:5432/privmap
+      - DEBUG=true
+      - DATA_PATH=/app/data/train.csv
+      - CORS_ORIGINS=["http://localhost:3000","http://127.0.0.1:3000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/app:/app/app:ro
+      - ./train.csv:/app/data/train.csv:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data_dev:
+    driver: local
+
+networks:
+  default:
+    name: privmap-network-dev

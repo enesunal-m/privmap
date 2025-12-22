@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/privmap"
     
+    # Data path (for taxi CSV file)
+    data_path: str = "/app/data/train.csv"
+    
     # Privacy defaults
     default_epsilon: float = 1.0
     min_epsilon: float = 0.01

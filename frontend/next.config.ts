@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
     reactStrictMode: true,
 
+    // Enable standalone output for Docker builds
+    output: "standalone",
+
     // API proxy to backend during development
     async rewrites() {
         return [
