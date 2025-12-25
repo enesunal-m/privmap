@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..privacy.privtree import PrivTree, BoundingBox
+from ..privacy.adaptive_grid import AdaptiveGrid, GridCell, create_adaptive_grid_from_bounds
 from ..config import get_settings
 
 settings = get_settings()
@@ -318,6 +319,319 @@ class SpatialService:
             "resolution": resolution,
         }
     
+    async def create_adaptive_grid(
+        self,
+        epsilon: float,
+        bounds: Optional[BoundingBox] = None,
+        budget_split: float = 0.5,
+        max_points: Optional[int] = None
+    ) -> dict:
+        """
+        Create an Adaptive Grid decomposition of the spatial data.
+
+        The Adaptive Grid (AG) algorithm by Qardaji et al. (2013) uses a
+        two-level strategy:
+        1. Coarse uniform grid to identify dense regions
+        2. Fine subdivisions in dense cells for higher resolution
+
+        Args:
+            epsilon: Privacy budget for this query
+            bounds: Optional bounding box (defaults to full dataset)
+            budget_split: Fraction of epsilon for level 1 (default 0.5)
+            max_points: Optional limit on points to process
+
+        Returns:
+            Dictionary containing GeoJSON and statistics
+        """
+        if bounds is None:
+            bounds = self._get_default_bounds()
+
+        # Load data points from PostgreSQL
+        points = await self.load_data(limit=max_points, bounds=bounds)
+
+        # Create Adaptive Grid using factory function
+        ag = create_adaptive_grid_from_bounds(
+            epsilon=epsilon,
+            min_lon=bounds.min_lon,
+            max_lon=bounds.max_lon,
+            min_lat=bounds.min_lat,
+            max_lat=bounds.max_lat,
+            budget_split=budget_split,
+        )
+
+        # Build the grid
+        ag.build(points)
+
+        # Get results
+        geojson = ag.to_geojson()
+        statistics = ag.get_statistics()
+
+        return {
+            "geojson": geojson,
+            "statistics": statistics,
+            "point_count": len(points),
+        }
+
+    async def create_comparison(
+        self,
+        epsilon: float,
+        bounds: Optional[BoundingBox] = None,
+        max_points: Optional[int] = None
+    ) -> dict:
+        """
+        Create both PrivTree and Adaptive Grid decompositions for comparison.
+
+        Both algorithms receive the same epsilon budget independently,
+        allowing for a fair side-by-side comparison.
+
+        Args:
+            epsilon: Privacy budget for EACH algorithm
+            bounds: Optional bounding box (defaults to full dataset)
+            max_points: Optional limit on points to process
+
+        Returns:
+            Dictionary containing both decomposition results
+        """
+        if bounds is None:
+            bounds = self._get_default_bounds()
+
+        # Load data once for both algorithms
+        points = await self.load_data(limit=max_points, bounds=bounds)
+
+        # ===== PrivTree Decomposition =====
+        privtree = PrivTree(
+            epsilon=epsilon,
+            bounds=bounds,
+            fanout=settings.privtree_fanout,
+            theta=settings.privtree_theta,
+        )
+        privtree.build(points)
+        privtree_geojson = privtree.to_geojson()
+        privtree_stats = privtree.get_statistics()
+
+        # ===== Adaptive Grid Decomposition =====
+        ag = create_adaptive_grid_from_bounds(
+            epsilon=epsilon,
+            min_lon=bounds.min_lon,
+            max_lon=bounds.max_lon,
+            min_lat=bounds.min_lat,
+            max_lat=bounds.max_lat,
+        )
+        ag.build(points)
+        ag_geojson = ag.to_geojson()
+        ag_stats = ag.get_statistics()
+
+        return {
+            "privtree": {
+                "geojson": privtree_geojson,
+                "statistics": privtree_stats,
+            },
+            "adaptive_grid": {
+                "geojson": ag_geojson,
+                "statistics": ag_stats,
+            },
+            "point_count": len(points),
+            "epsilon_per_algorithm": epsilon,
+        }
+
+    async def calculate_mse(
+        self,
+        epsilon: float,
+        bounds: Optional[BoundingBox] = None,
+        num_trials: int = 10,
+        max_points: Optional[int] = None
+    ) -> dict:
+        """
+        Calculate Mean Squared Error for both algorithms.
+
+        This method runs multiple trials of each algorithm and compares
+        the noisy counts against the true counts to compute MSE.
+
+        For fair comparison, we use a common uniform grid to evaluate
+        both algorithms - computing the true count and the estimated
+        count for each grid cell.
+
+        Args:
+            epsilon: Privacy budget for each algorithm
+            bounds: Optional bounding box
+            num_trials: Number of trials to average over
+            max_points: Optional limit on points
+
+        Returns:
+            Dictionary containing MSE results for both algorithms
+        """
+        if bounds is None:
+            bounds = self._get_default_bounds()
+
+        # Load data once
+        points = await self.load_data(limit=max_points, bounds=bounds)
+
+        # Create evaluation grid (fixed resolution for fair comparison)
+        eval_resolution = 20  # 20x20 = 400 cells
+        lon_edges = np.linspace(bounds.min_lon, bounds.max_lon, eval_resolution + 1)
+        lat_edges = np.linspace(bounds.min_lat, bounds.max_lat, eval_resolution + 1)
+
+        # Compute true counts for the evaluation grid
+        true_counts = np.zeros((eval_resolution, eval_resolution))
+        for i in range(eval_resolution):
+            for j in range(eval_resolution):
+                cell_bounds = BoundingBox(
+                    min_lon=lon_edges[i],
+                    max_lon=lon_edges[i + 1],
+                    min_lat=lat_edges[j],
+                    max_lat=lat_edges[j + 1],
+                )
+                mask = (
+                    (points[:, 0] >= cell_bounds.min_lon) &
+                    (points[:, 0] < cell_bounds.max_lon) &
+                    (points[:, 1] >= cell_bounds.min_lat) &
+                    (points[:, 1] < cell_bounds.max_lat)
+                )
+                true_counts[i, j] = np.sum(mask)
+
+        # Run multiple trials for each algorithm
+        privtree_errors = []
+        ag_errors = []
+
+        for _ in range(num_trials):
+            # ===== PrivTree Trial =====
+            privtree = PrivTree(
+                epsilon=epsilon,
+                bounds=bounds,
+                fanout=settings.privtree_fanout,
+                theta=settings.privtree_theta,
+            )
+            privtree.build(points)
+            pt_estimated = self._evaluate_on_grid(
+                privtree.get_leaf_nodes(),
+                lon_edges,
+                lat_edges,
+                eval_resolution,
+            )
+            privtree_errors.append(pt_estimated - true_counts)
+
+            # ===== Adaptive Grid Trial =====
+            ag = create_adaptive_grid_from_bounds(
+                epsilon=epsilon,
+                min_lon=bounds.min_lon,
+                max_lon=bounds.max_lon,
+                min_lat=bounds.min_lat,
+                max_lat=bounds.max_lat,
+            )
+            ag.build(points)
+            ag_estimated = self._evaluate_on_grid_ag(
+                ag.result.cells if ag.result else [],
+                lon_edges,
+                lat_edges,
+                eval_resolution,
+            )
+            ag_errors.append(ag_estimated - true_counts)
+
+        # Compute MSE statistics
+        privtree_all_errors = np.array(privtree_errors)
+        ag_all_errors = np.array(ag_errors)
+
+        privtree_mse = float(np.mean(privtree_all_errors ** 2))
+        ag_mse = float(np.mean(ag_all_errors ** 2))
+
+        return {
+            "privtree": {
+                "algorithm": "privtree",
+                "mse": privtree_mse,
+                "rmse": float(np.sqrt(privtree_mse)),
+                "mean_error": float(np.mean(np.abs(privtree_all_errors))),
+                "max_error": float(np.max(np.abs(privtree_all_errors))),
+                "num_cells": eval_resolution * eval_resolution,
+            },
+            "adaptive_grid": {
+                "algorithm": "adaptive_grid",
+                "mse": ag_mse,
+                "rmse": float(np.sqrt(ag_mse)),
+                "mean_error": float(np.mean(np.abs(ag_all_errors))),
+                "max_error": float(np.max(np.abs(ag_all_errors))),
+                "num_cells": eval_resolution * eval_resolution,
+            },
+            "epsilon_used": epsilon,
+            "num_trials": num_trials,
+            "winner": "privtree" if privtree_mse < ag_mse else "adaptive_grid",
+        }
+
+    def _evaluate_on_grid(
+        self,
+        leaves: list,
+        lon_edges: np.ndarray,
+        lat_edges: np.ndarray,
+        resolution: int,
+    ) -> np.ndarray:
+        """
+        Evaluate PrivTree decomposition on a uniform grid.
+
+        For each evaluation cell, find all overlapping leaves and
+        estimate the count proportionally based on area overlap.
+        """
+        estimated = np.zeros((resolution, resolution))
+
+        for i in range(resolution):
+            for j in range(resolution):
+                cell_min_lon = lon_edges[i]
+                cell_max_lon = lon_edges[i + 1]
+                cell_min_lat = lat_edges[j]
+                cell_max_lat = lat_edges[j + 1]
+
+                for leaf in leaves:
+                    # Calculate intersection area
+                    inter_min_lon = max(cell_min_lon, leaf.bounds.min_lon)
+                    inter_max_lon = min(cell_max_lon, leaf.bounds.max_lon)
+                    inter_min_lat = max(cell_min_lat, leaf.bounds.min_lat)
+                    inter_max_lat = min(cell_max_lat, leaf.bounds.max_lat)
+
+                    if inter_min_lon < inter_max_lon and inter_min_lat < inter_max_lat:
+                        inter_area = (inter_max_lon - inter_min_lon) * (inter_max_lat - inter_min_lat)
+                        leaf_area = leaf.bounds.area
+                        if leaf_area > 0:
+                            # Proportional count based on area overlap
+                            proportion = inter_area / leaf_area
+                            estimated[i, j] += (leaf.noisy_count or 0) * proportion
+
+        return estimated
+
+    def _evaluate_on_grid_ag(
+        self,
+        cells: list,
+        lon_edges: np.ndarray,
+        lat_edges: np.ndarray,
+        resolution: int,
+    ) -> np.ndarray:
+        """
+        Evaluate Adaptive Grid decomposition on a uniform grid.
+
+        Similar to _evaluate_on_grid but for GridCell objects.
+        """
+        estimated = np.zeros((resolution, resolution))
+
+        for i in range(resolution):
+            for j in range(resolution):
+                cell_min_lon = lon_edges[i]
+                cell_max_lon = lon_edges[i + 1]
+                cell_min_lat = lat_edges[j]
+                cell_max_lat = lat_edges[j + 1]
+
+                for ag_cell in cells:
+                    # Calculate intersection area
+                    inter_min_lon = max(cell_min_lon, ag_cell.min_lon)
+                    inter_max_lon = min(cell_max_lon, ag_cell.max_lon)
+                    inter_min_lat = max(cell_min_lat, ag_cell.min_lat)
+                    inter_max_lat = min(cell_max_lat, ag_cell.max_lat)
+
+                    if inter_min_lon < inter_max_lon and inter_min_lat < inter_max_lat:
+                        inter_area = (inter_max_lon - inter_min_lon) * (inter_max_lat - inter_min_lat)
+                        ag_cell_area = ag_cell.area
+                        if ag_cell_area > 0:
+                            proportion = inter_area / ag_cell_area
+                            estimated[i, j] += ag_cell.noisy_count * proportion
+
+        return estimated
+
     async def get_data_statistics(self) -> dict:
         """Get statistics about the loaded data."""
         # Query count and bounds from database

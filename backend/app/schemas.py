@@ -108,12 +108,120 @@ class DecompositionStatistics(BaseModel):
     delta: float
 
 
+class AdaptiveGridStatistics(BaseModel):
+    """Statistics about an Adaptive Grid decomposition."""
+    algorithm: str = "adaptive_grid"
+    total_cells: int
+    level1_cells: int
+    level2_cells: int
+    m1: int  # Coarse grid dimension
+    m2: int  # Fine grid dimension
+    max_depth: int
+    min_depth: int
+    avg_depth: float
+    total_noisy_count: float
+    epsilon_used: float
+    epsilon1: float  # Budget for level 1
+    epsilon2: float  # Budget for level 2
+    noise_scale_l1: float
+    noise_scale_l2: float
+    density_threshold: float
+    # Compatibility fields
+    total_leaves: int
+    noise_scale: float
+    delta: float = 0.0
+
+
+class AdaptiveGridRequest(BaseModel):
+    """Request for Adaptive Grid spatial decomposition."""
+    epsilon: float = Field(
+        default=1.0,
+        ge=0.01,
+        le=10.0,
+        description="Privacy budget for this query"
+    )
+    bounds: Optional[BoundsParams] = None
+    budget_split: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=0.9,
+        description="Fraction of budget for level 1 (coarse grid)"
+    )
+    use_cache: bool = Field(
+        default=True,
+        description="Whether to use cached results if available"
+    )
+
+
 class DecompositionResponse(BaseModel):
     """Response containing PrivTree decomposition result."""
     geojson: dict
     statistics: DecompositionStatistics
     epsilon_spent: float
     remaining_budget: float
+
+
+class AdaptiveGridResponse(BaseModel):
+    """Response containing Adaptive Grid decomposition result."""
+    geojson: dict
+    statistics: AdaptiveGridStatistics
+    epsilon_spent: float
+    remaining_budget: float
+
+
+class ComparisonRequest(BaseModel):
+    """Request for comparing PrivTree and Adaptive Grid algorithms."""
+    epsilon: float = Field(
+        default=1.0,
+        ge=0.01,
+        le=10.0,
+        description="Privacy budget for each algorithm"
+    )
+    bounds: Optional[BoundsParams] = None
+
+
+class ComparisonResponse(BaseModel):
+    """Response containing side-by-side algorithm comparison."""
+    privtree: DecompositionResponse
+    adaptive_grid: AdaptiveGridResponse
+    epsilon_spent: float  # Total spent (2x epsilon for both algorithms)
+    remaining_budget: float
+
+
+class MSERequest(BaseModel):
+    """Request for calculating Mean Squared Error for a region."""
+    epsilon: float = Field(
+        default=1.0,
+        ge=0.01,
+        le=10.0,
+        description="Privacy budget for each algorithm"
+    )
+    bounds: Optional[BoundsParams] = None
+    num_trials: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Number of trials to average MSE over"
+    )
+
+
+class MSEResult(BaseModel):
+    """MSE result for a single algorithm."""
+    algorithm: str
+    mse: float
+    rmse: float
+    mean_error: float
+    max_error: float
+    num_cells: int
+
+
+class MSEResponse(BaseModel):
+    """Response containing MSE comparison between algorithms."""
+    privtree: MSEResult
+    adaptive_grid: MSEResult
+    epsilon_used: float
+    num_trials: int
+    winner: str  # Which algorithm has lower MSE
 
 
 # --- Heatmap Generation ---
