@@ -6,6 +6,9 @@ import type { Map as LeafletMapType } from "leaflet";
 import { getHeatmapColor } from "@/lib/utils";
 import "leaflet/dist/leaflet.css";
 
+// Performance: Limit cells to render for smooth performance
+const MAX_CELLS_TO_RENDER = 10000;
+
 interface MapBounds {
   min_lon: number;
   max_lon: number;
@@ -84,32 +87,51 @@ function getFeatureStyle(feature: any): Record<string, unknown> {
   };
 }
 
-// Process GeoJSON to add maxCount for normalization
+// Process GeoJSON to add maxCount for normalization and limit cells for performance
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function processGeoJSON(geojson: any): any {
-  if (!geojson?.features) return geojson;
+function processGeoJSON(geojson: any): { data: any; truncated: boolean } {
+  if (!geojson?.features) return { data: geojson, truncated: false };
 
-  const counts: number[] = geojson.features
+  let features = geojson.features;
+  let truncated = false;
+
+  // Performance optimization: limit number of cells rendered
+  if (features.length > MAX_CELLS_TO_RENDER) {
+    // Sort by count (descending) and keep the most significant cells
+    features = [...features]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .sort(
+        (a: any, b: any) =>
+          (b.properties?.count || 0) - (a.properties?.count || 0)
+      )
+      .slice(0, MAX_CELLS_TO_RENDER);
+    truncated = true;
+  }
+
+  const counts: number[] = features
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .map((f: any) => f.properties?.count || 0)
     .filter((c: number) => c > 0);
 
-  if (counts.length === 0) return geojson;
+  if (counts.length === 0) return { data: geojson, truncated };
 
   counts.sort((a, b) => a - b);
   const maxCount =
     counts[Math.floor(counts.length * 0.95)] || Math.max(...counts);
 
   return {
-    ...geojson,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    features: geojson.features.map((feature: any) => ({
-      ...feature,
-      properties: {
-        ...feature.properties,
-        maxCount,
-      },
-    })),
+    data: {
+      ...geojson,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      features: features.map((feature: any) => ({
+        ...feature,
+        properties: {
+          ...feature.properties,
+          maxCount,
+        },
+      })),
+    },
+    truncated,
   };
 }
 
@@ -133,9 +155,10 @@ export default function LeafletMap({
   }, []);
 
   // Process GeoJSON for visualization
-  const processedGeoJSON = useMemo(() => {
-    if (!geojson) return null;
-    return processGeoJSON(geojson);
+  const { processedGeoJSON, isTruncated } = useMemo(() => {
+    if (!geojson) return { processedGeoJSON: null, isTruncated: false };
+    const result = processGeoJSON(geojson);
+    return { processedGeoJSON: result.data, isTruncated: result.truncated };
   }, [geojson]);
 
   // Generate unique key for GeoJSON layer
@@ -229,6 +252,11 @@ export default function LeafletMap({
           <div className="w-2 h-2 rounded-sm bg-surface-700/50" />
           <span>Empty areas hidden</span>
         </div>
+        {isTruncated && (
+          <div className="text-[10px] text-amber-400 mt-1.5">
+            Showing top {MAX_CELLS_TO_RENDER} cells for performance
+          </div>
+        )}
       </div>
 
       {/* No data message */}

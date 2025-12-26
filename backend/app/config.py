@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     # PrivTree algorithm parameters
     privtree_fanout: int = 4  # Quadtree splits into 4 children
     privtree_theta: float = 0.0  # Threshold for splitting
+
+    # Performance tuning
+    max_sample_size: int = 100_000  # Max points to load for algorithms
+    use_db_counting: bool = True  # Use database-side counting when possible
     
     # Map bounds (Porto, Portugal area for taxi dataset)
     map_min_lon: float = -8.7
