@@ -128,18 +128,21 @@ class SpatialService:
         # Points outside the range get 0 or buckets+1
         result = await self.db.execute(
             text("""
-                SELECT
-                    width_bucket(longitude, :min_lon, :max_lon, :n_cols) - 1 as col,
-                    width_bucket(latitude, :min_lat, :max_lat, :n_rows) - 1 as row,
-                    COUNT(*) as cnt
-                FROM taxi_pickups
-                WHERE longitude >= :min_lon
-                  AND longitude < :max_lon
-                  AND latitude >= :min_lat
-                  AND latitude < :max_lat
+                WITH bucketed AS (
+                    SELECT
+                        width_bucket(longitude, :min_lon, :max_lon, :n_cols) - 1 as col,
+                        width_bucket(latitude, :min_lat, :max_lat, :n_rows) - 1 as row
+                    FROM taxi_pickups
+                    WHERE longitude >= :min_lon
+                      AND longitude < :max_lon
+                      AND latitude >= :min_lat
+                      AND latitude < :max_lat
+                )
+                SELECT col, row, COUNT(*) as cnt
+                FROM bucketed
+                WHERE col >= 0 AND col < :n_cols
+                  AND row >= 0 AND row < :n_rows
                 GROUP BY col, row
-                HAVING width_bucket(longitude, :min_lon, :max_lon, :n_cols) BETWEEN 1 AND :n_cols
-                   AND width_bucket(latitude, :min_lat, :max_lat, :n_rows) BETWEEN 1 AND :n_rows
             """),
             {
                 "min_lon": min_lon,

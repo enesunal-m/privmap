@@ -46,6 +46,42 @@ export interface SessionStatus {
   can_query: boolean;
 }
 
+export interface AdaptiveGridStatistics {
+  algorithm: string;
+  total_cells: number;
+  level1_cells: number;
+  level2_cells: number;
+  m1: number;
+  m2: number;
+  max_depth: number;
+  min_depth: number;
+  avg_depth: number;
+  total_noisy_count: number;
+  epsilon_used: number;
+  epsilon1: number;
+  epsilon2: number;
+  noise_scale_l1: number;
+  noise_scale_l2: number;
+  density_threshold: number;
+  total_leaves: number;
+  noise_scale: number;
+  delta: number;
+}
+
+export interface AdaptiveGridResponse {
+  geojson: GeoJSON.FeatureCollection;
+  statistics: AdaptiveGridStatistics;
+  epsilon_spent: number;
+  remaining_budget: number;
+}
+
+export interface ComparisonResponse {
+  privtree: DecompositionResponse;
+  adaptive_grid: AdaptiveGridResponse;
+  epsilon_spent: number;
+  remaining_budget: number;
+}
+
 function getBaseUrl(): string {
   // Ensure trailing slash is not duplicated
   return API_URL.replace(/\/+$/, "");
@@ -110,6 +146,33 @@ async function getDecomposition(params: {
   });
 }
 
+async function getAdaptiveGrid(params: {
+  epsilon: number;
+  bounds?: Omit<BoundsResponse, "center">;
+}): Promise<AdaptiveGridResponse> {
+  return request<AdaptiveGridResponse>("/api/spatial/adaptive-grid", {
+    method: "POST",
+    body: JSON.stringify({
+      epsilon: params.epsilon,
+      bounds: params.bounds,
+      use_cache: true,
+    }),
+  });
+}
+
+async function getComparison(params: {
+  epsilon: number;
+  bounds?: Omit<BoundsResponse, "center">;
+}): Promise<ComparisonResponse> {
+  return request<ComparisonResponse>("/api/spatial/comparison", {
+    method: "POST",
+    body: JSON.stringify({
+      epsilon: params.epsilon,
+      bounds: params.bounds,
+    }),
+  });
+}
+
 async function createSession(initialBudget = 5.0): Promise<SessionResponse> {
   const session = await request<SessionResponse>(
     "/api/sessions/",
@@ -138,6 +201,8 @@ function clearSession() {
 export const api = {
   getBounds,
   getDecomposition,
+  getAdaptiveGrid,
+  getComparison,
   createSession,
   getSessionStatus,
   clearSession,
